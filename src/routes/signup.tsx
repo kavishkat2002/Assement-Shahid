@@ -48,7 +48,10 @@ function Signup() {
       options: { emailRedirectTo: window.location.origin + "/account", data: { full_name: p.data.full_name, phone: p.data.phone } },
     });
     setBusy(false);
-    if (error) return setFormError(friendlyError(error));
+    if (error) {
+      console.error("Signup error:", error);
+      return setFormError(friendlyError(error));
+    }
     // An existing confirmed email returns a user with no identities.
     if (data.user && data.user.identities?.length === 0) return setFormError("An account with this email already exists. Try signing in instead.");
     setDone(true);
