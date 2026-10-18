@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Field } from "@/components/site/common";
 import { friendlyError } from "@/lib/format";
 import { AuthCard, googleSignIn } from "./login";
+
+const safePath = (p?: string) => (p && p.startsWith("/") && !p.startsWith("//") ? p : "/account");
 
 const schema = z.object({
   full_name: z.string().trim().min(2, "Please enter your full name.").max(100),
@@ -28,6 +30,7 @@ export const Route = createFileRoute("/signup")({
 
 function Signup() {
   const { redirect } = Route.useSearch();
+  const navigate = useNavigate();
   const [v, setV] = useState({ full_name: "", email: "", phone: "", password: "" });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState("");
@@ -54,6 +57,10 @@ function Signup() {
     }
     // An existing confirmed email returns a user with no identities.
     if (data.user && data.user.identities?.length === 0) return setFormError("An account with this email already exists. Try signing in instead.");
+    if (data.session) {
+      navigate({ to: safePath(redirect) });
+      return;
+    }
     setDone(true);
   }
 
