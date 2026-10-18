@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, useRef, type FormEvent } from "react";
 import { toast } from "sonner";
-import { UploadCloud, Trash2, Loader2, Star, Image as ImageIcon } from "lucide-react";
+import { UploadCloud, Trash2, Loader2, Star, Image as ImageIcon, AlertCircle, Copy, Check, ExternalLink, Link as LinkIcon } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -180,7 +180,62 @@ function VehicleForm({ initial, images, onSaved, onClose }: { initial: typeof em
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [isDragging, setIsDragging] = useState(false);
+  const [bucketMissing, setBucketMissing] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+  const [photoUrl, setPhotoUrl] = useState("");
+  const [addingUrl, setAddingUrl] = useState(false);
+  const [showUrlInput, setShowUrlInput] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const bucketSetupSql = `-- Run this in your Supabase SQL Editor to create the 'vehicle-images' storage bucket:
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('vehicle-images', 'vehicle-images', false, 5242880, array['image/jpeg', 'image/png', 'image/webp', 'image/jpg'])
+on conflict (id) do update set public = false, file_size_limit = 5242880, allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+
+do $$
+begin
+  drop policy if exists "vehicle images read" on storage.objects;
+  drop policy if exists "vehicle images admin write" on storage.objects;
+  drop policy if exists "vehicle images admin delete" on storage.objects;
+
+  create policy "vehicle images read" on storage.objects for select using (bucket_id = 'vehicle-images');
+  create policy "vehicle images admin write" on storage.objects for insert to authenticated with check (bucket_id = 'vehicle-images' and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid())));
+  create policy "vehicle images admin delete" on storage.objects for delete to authenticated using (bucket_id = 'vehicle-images' and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid())));
+end $$;`;
+
+  function copyBucketSql() {
+    navigator.clipboard.writeText(bucketSetupSql);
+    setCopiedSql(true);
+    toast.success("SQL copied to clipboard!");
+    setTimeout(() => setCopiedSql(false), 3000);
+  }
+
+  async function addPhotoByUrl(e: FormEvent) {
+    e.preventDefault();
+    if (!v.id) return void toast.error("Please save the vehicle details first.");
+    const trimmed = photoUrl.trim();
+    if (!trimmed) return;
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://") && !trimmed.startsWith("data:")) {
+      return void toast.error("Please enter a valid image URL (http/https).");
+    }
+    setAddingUrl(true);
+    const { error: dbErr } = await supabase.from("vehicle_images").insert({
+      vehicle_id: v.id,
+      url: trimmed,
+      storage_path: null,
+      alt: `${v.make} ${v.model}`,
+      sort_order: images.length,
+    });
+    setAddingUrl(false);
+    if (dbErr) {
+      toast.error(friendlyError(dbErr));
+    } else {
+      toast.success("Photo added from URL.");
+      setPhotoUrl("");
+      setShowUrlInput(false);
+      onSaved();
+    }
+  }
 
   async function uploadFiles(files: FileList | File[]) {
     if (!v.id) return void toast.error("Please save the vehicle details first.");
@@ -211,7 +266,8 @@ function VehicleForm({ initial, images, onSaved, onClose }: { initial: typeof em
         console.error("Storage upload error:", up.error);
         const errMsg = up.error.message || "";
         if (errMsg.includes("Bucket not found") || (up.error as any).statusCode === "404") {
-          toast.error("Storage bucket 'vehicle-images' not found. Please create it in your Supabase Storage dashboard or run supabase/seed.sql.");
+          setBucketMissing(true);
+          toast.error("Storage bucket 'vehicle-images' not found. Please click 'Copy SQL Setup' below or create it in Supabase.");
         } else if (errMsg.includes("row-level security") || errMsg.includes("AccessDenied") || (up.error as any).statusCode === "403") {
           toast.error("Upload permission denied. Ensure your logged-in account has admin or staff permissions.");
         } else {
@@ -347,6 +403,40 @@ function VehicleForm({ initial, images, onSaved, onClose }: { initial: typeof em
             </div>
           )}
 
+          {/* Storage Bucket Not Found Warning Banner */}
+          {bucketMissing && (
+            <div className="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-left">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                <div className="space-y-2 text-xs flex-1">
+                  <p className="font-semibold text-destructive text-sm">Storage bucket 'vehicle-images' not found in Supabase</p>
+                  <p className="text-muted-foreground leading-relaxed">
+                    Supabase requires creating the private <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground font-semibold">vehicle-images</code> bucket before files can be uploaded. Click below to copy the SQL setup command, or create it in the Supabase Dashboard.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={copyBucketSql}
+                      className="h-8 gap-1.5 text-xs font-medium"
+                    >
+                      {copiedSql ? <Check className="h-3.5 w-3.5 text-green-400" /> : <Copy className="h-3.5 w-3.5" />}
+                      {copiedSql ? "SQL Copied to Clipboard!" : "Copy SQL Setup Code"}
+                    </Button>
+                    <a
+                      href="https://supabase.com/dashboard/project/ylyvzfkvmkkoemtyvnpa/storage/buckets"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border text-xs font-medium bg-background hover:bg-muted text-foreground transition-colors"
+                    >
+                      Open Supabase Storage <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Drag & Drop Upload Zone */}
           <div
             onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -390,6 +480,35 @@ function VehicleForm({ initial, images, onSaved, onClose }: { initial: typeof em
                   <p className="text-xs text-muted-foreground mt-0.5">JPEG, PNG, WebP up to 5 MB (Select multiple files at once)</p>
                 </div>
               </div>
+            )}
+          </div>
+
+          {/* Alternative: Add Photo via Direct URL */}
+          <div className="mt-3">
+            {!showUrlInput ? (
+              <button
+                type="button"
+                onClick={() => setShowUrlInput(true)}
+                className="text-xs font-medium text-primary hover:underline inline-flex items-center gap-1"
+              >
+                <LinkIcon className="h-3 w-3" /> Or add photo via direct image URL
+              </button>
+            ) : (
+              <form onSubmit={addPhotoByUrl} className="flex gap-2 items-center rounded-lg border bg-muted/20 p-2.5">
+                <Input
+                  type="url"
+                  placeholder="Paste direct image URL (https://...)..."
+                  value={photoUrl}
+                  onChange={(e) => setPhotoUrl(e.target.value)}
+                  className="h-8 text-xs flex-1"
+                />
+                <Button type="submit" size="sm" disabled={addingUrl || !photoUrl.trim()} className="h-8 text-xs">
+                  {addingUrl ? "Adding…" : "Add URL"}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setShowUrlInput(false)} className="h-8 text-xs">
+                  Cancel
+                </Button>
+              </form>
             )}
           </div>
         </div>
