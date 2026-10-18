@@ -342,3 +342,46 @@ insert into public.rental_inquiries (
 insert into public.audit_logs (actor_id, action, entity, entity_id, details, created_at)
 values
   (null, 'system.seed', 'platform', 'seed_data', '{"message":"Demo fleet, test profiles and rental records seeded successfully"}'::jsonb, now());
+
+-- 6. STORAGE BUCKET CONFIGURATION & POLICIES FOR FLEET PHOTOS
+-- Creates the private 'vehicle-images' bucket for vehicle photos
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'vehicle-images',
+  'vehicle-images',
+  false,
+  5242880,
+  array['image/jpeg', 'image/png', 'image/webp', 'image/jpg']
+)
+on conflict (id) do update set
+  public = false,
+  file_size_limit = 5242880,
+  allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+
+-- Storage RLS Policies
+do $$
+begin
+  -- Drop existing policies if any to prevent duplicate errors
+  drop policy if exists "vehicle images read" on storage.objects;
+  drop policy if exists "vehicle images admin write" on storage.objects;
+  drop policy if exists "vehicle images admin delete" on storage.objects;
+
+  create policy "vehicle images read"
+    on storage.objects for select
+    using (bucket_id = 'vehicle-images');
+
+  create policy "vehicle images admin write"
+    on storage.objects for insert to authenticated
+    with check (
+      bucket_id = 'vehicle-images'
+      and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid()))
+    );
+
+  create policy "vehicle images admin delete"
+    on storage.objects for delete to authenticated
+    using (
+      bucket_id = 'vehicle-images'
+      and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid()))
+    );
+end $$;
+

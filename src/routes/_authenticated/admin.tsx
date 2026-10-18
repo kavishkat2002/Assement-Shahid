@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, useRef, type FormEvent } from "react";
 import { toast } from "sonner";
+import { UploadCloud, Trash2, Loader2, Star, Image as ImageIcon } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -176,24 +177,97 @@ function VehicleForm({ initial, images, onSaved, onClose }: { initial: typeof em
     onSaved();
   }
 
-  async function upload(file: File) {
-    if (!v.id) return void toast.error("Save the vehicle first.");
-    if (!file.type.startsWith("image/")) return void toast.error("Please choose an image file.");
-    if (file.size > 5 * 1024 * 1024) return void toast.error("Images must be 5 MB or smaller.");
-    const path = `${v.id}/${Date.now()}-${file.name.replace(/[^a-z0-9.]+/gi, "-")}`;
-    const up = await supabase.storage.from("vehicle-images").upload(path, file);
-    if (up.error) return void toast.error("Upload failed. Please try again.");
-    // Private bucket: store a long-lived signed URL for public display.
-    const signed = await supabase.storage.from("vehicle-images").createSignedUrl(path, 60 * 60 * 24 * 365 * 10);
-    if (signed.error) return void toast.error("Upload saved but the link couldn't be created.");
-    const { error } = await supabase.from("vehicle_images").insert({ vehicle_id: v.id, url: signed.data.signedUrl, storage_path: path, alt: `${v.make} ${v.model}`, sort_order: images.length });
-    if (error) return void toast.error(friendlyError(error));
-    toast.success("Photo added."); onSaved();
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function uploadFiles(files: FileList | File[]) {
+    if (!v.id) return void toast.error("Please save the vehicle details first.");
+    const fileList = Array.from(files);
+    if (!fileList.length) return;
+
+    const invalidType = fileList.find((f) => !f.type.startsWith("image/"));
+    if (invalidType) return void toast.error("Only image files (JPEG, PNG, WebP) are allowed.");
+
+    const tooLarge = fileList.find((f) => f.size > 5 * 1024 * 1024);
+    if (tooLarge) return void toast.error(`"${tooLarge.name}" exceeds the 5 MB limit.`);
+
+    setUploading(true);
+    let successCount = 0;
+
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      setUploadProgress(`Uploading ${i + 1} of ${fileList.length}: ${file.name}`);
+      const cleanName = file.name.replace(/[^a-z0-9.]+/gi, "-").toLowerCase();
+      const path = `${v.id}/${Date.now()}-${cleanName}`;
+
+      const up = await supabase.storage.from("vehicle-images").upload(path, file, {
+        cacheControl: "3600",
+        upsert: false,
+      });
+
+      if (up.error) {
+        console.error("Storage upload error:", up.error);
+        const errMsg = up.error.message || "";
+        if (errMsg.includes("Bucket not found") || (up.error as any).statusCode === "404") {
+          toast.error("Storage bucket 'vehicle-images' not found. Please create it in your Supabase Storage dashboard or run supabase/seed.sql.");
+        } else if (errMsg.includes("row-level security") || errMsg.includes("AccessDenied") || (up.error as any).statusCode === "403") {
+          toast.error("Upload permission denied. Ensure your logged-in account has admin or staff permissions.");
+        } else {
+          toast.error(`Failed to upload ${file.name}: ${errMsg}`);
+        }
+        break;
+      }
+
+      // Private bucket: store a long-lived signed URL for public display.
+      const signed = await supabase.storage.from("vehicle-images").createSignedUrl(path, 60 * 60 * 24 * 365 * 10);
+      if (signed.error) {
+        toast.error(`Link creation failed for ${file.name}`);
+        continue;
+      }
+
+      const { error: dbErr } = await supabase.from("vehicle_images").insert({
+        vehicle_id: v.id,
+        url: signed.data.signedUrl,
+        storage_path: path,
+        alt: `${v.make} ${v.model}`,
+        sort_order: images.length + successCount,
+      });
+
+      if (dbErr) {
+        toast.error(friendlyError(dbErr));
+        continue;
+      }
+
+      successCount++;
+    }
+
+    setUploading(false);
+    setUploadProgress("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (successCount > 0) {
+      toast.success(successCount === 1 ? "Photo added successfully." : `${successCount} photos added successfully.`);
+      onSaved();
+    }
   }
+
+  async function setAsCover(img: any) {
+    if (!v.id) return;
+    const updates = images.map((im) => {
+      const newOrder = im.id === img.id ? 0 : (im.sort_order <= img.sort_order ? im.sort_order + 1 : im.sort_order);
+      return supabase.from("vehicle_images").update({ sort_order: newOrder }).eq("id", im.id);
+    });
+    await Promise.all(updates);
+    toast.success("Cover photo updated.");
+    onSaved();
+  }
+
   async function removeImage(img: any) {
     if (img.storage_path) await supabase.storage.from("vehicle-images").remove([img.storage_path]);
     const { error } = await supabase.from("vehicle_images").delete().eq("id", img.id);
     if (error) return void toast.error(friendlyError(error));
+    toast.success("Photo removed.");
     onSaved();
   }
 
@@ -222,20 +296,102 @@ function VehicleForm({ initial, images, onSaved, onClose }: { initial: typeof em
         <div className="flex gap-2 sm:col-span-3"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save vehicle"}</Button><Button type="button" variant="outline" onClick={onClose}>Close</Button></div>
       </form>
       {v.id && (
-        <div className="mt-4 border-t pt-4">
-          <p className="mb-2 font-semibold">Photos</p>
-          <div className="flex flex-wrap gap-3">
-            {images.map((im) => (
-              <div key={im.id} className="relative">
-                <img src={im.url} alt="" className="h-20 w-28 rounded object-cover" />
-                <button type="button" onClick={() => removeImage(im)} className="absolute right-1 top-1 rounded bg-card px-1.5 text-xs" aria-label="Remove photo">✕</button>
-              </div>
-            ))}
+        <div className="mt-6 border-t pt-5">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="font-semibold text-base">Fleet Photos</p>
+              <p className="text-xs text-muted-foreground">Manage showcase images for this vehicle. The first photo serves as the listing cover.</p>
+            </div>
+            <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-secondary text-secondary-foreground">
+              {images.length} {images.length === 1 ? "photo" : "photos"}
+            </span>
           </div>
-          <label className="mt-3 block text-sm">
-            <span className="sr-only">Upload photo</span>
-            <input type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} className="text-sm" />
-          </label>
+
+          {/* Photo Gallery Grid */}
+          {images.length > 0 && (
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {images
+                .slice()
+                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                .map((im, idx) => (
+                  <div key={im.id} className="group relative rounded-lg border bg-muted/30 overflow-hidden shadow-sm aspect-[4/3]">
+                    <img src={im.url} alt="" className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105" />
+                    
+                    {/* Cover Photo Badge */}
+                    {idx === 0 ? (
+                      <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded bg-primary/95 px-2 py-0.5 text-[11px] font-medium text-primary-foreground shadow">
+                        <Star className="h-3 w-3 fill-current" /> Cover Photo
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setAsCover(im)}
+                        className="absolute left-1.5 top-1.5 hidden group-hover:inline-flex items-center gap-1 rounded bg-background/90 px-2 py-0.5 text-[11px] font-medium shadow hover:bg-background"
+                      >
+                        <Star className="h-3 w-3" /> Set Cover
+                      </button>
+                    )}
+
+                    {/* Delete Action */}
+                    <button
+                      type="button"
+                      onClick={() => removeImage(im)}
+                      className="absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md bg-destructive/90 text-destructive-foreground opacity-90 transition-opacity hover:opacity-100 hover:bg-destructive shadow"
+                      title="Delete photo"
+                      aria-label="Remove photo"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+            </div>
+          )}
+
+          {/* Drag & Drop Upload Zone */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+              if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files);
+            }}
+            onClick={() => !uploading && fileInputRef.current?.click()}
+            className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center cursor-pointer transition-colors ${
+              isDragging
+                ? "border-primary bg-primary/5"
+                : "border-border hover:border-primary/60 hover:bg-muted/40"
+            } ${uploading ? "pointer-events-none opacity-60" : ""}`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => e.target.files?.length && uploadFiles(e.target.files)}
+            />
+
+            {uploading ? (
+              <div className="flex flex-col items-center gap-2 py-2">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                <p className="text-sm font-medium">{uploadProgress || "Uploading photo…"}</p>
+                <p className="text-xs text-muted-foreground">Please wait while the image is uploaded and signed.</p>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2">
+                <div className="rounded-full bg-primary/10 p-3 text-primary">
+                  <UploadCloud className="h-6 w-6" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    <span className="text-primary hover:underline font-semibold">Click to upload</span> or drag and drop
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">JPEG, PNG, WebP up to 5 MB (Select multiple files at once)</p>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </>
