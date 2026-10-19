@@ -1,42 +1,83 @@
-// Captures the original Error out-of-band so server.ts can recover the stack
-// when h3 has already swallowed the throw into a generic 500 Response.
+/**
+ * @file error-capture.ts
+ * @description Out-of-band error interceptor for server-side SSR and HTTP runtime debugging.
+ *
+ * Background & Problem Statement:
+ * The Nitro/h3 server runtime underpinning TanStack Start intercepts unhandled exceptions
+ * thrown during server-side rendering, converting them into generic JSON responses:
+ * `{"unhandled": true, "message": "HTTPError"}`.
+ * This conversion strips the original JavaScript Error stack trace and nested `.cause` chain,
+ * hindering forensic analysis in server telemetry and logs.
+ *
+ * Solution:
+ * 1. Monkey-patches `console.error` and hooks global rejection listeners.
+ * 2. Unrolls nested error causes recursively (up to 5 levels) into detailed diagnostic text.
+ * 3. Caches the latest captured exception with a 5-second Time-To-Live (TTL) so that
+ *    `server.ts` can retrieve the true failure cause when producing fallback HTML.
+ */
 
-let lastCapturedError: { error: unknown; at: number } | undefined;
-const TTL_MS = 5_000;
+interface CapturedErrorRecord {
+  error: unknown;
+  at: number;
+}
 
-function record(error: unknown) {
+let lastCapturedError: CapturedErrorRecord | undefined;
+
+/** Maximum time in milliseconds to retain a captured error before expiring it */
+const ERROR_TTL_MS = 5_000;
+
+/** Depth limit for traversing chained Error.cause references */
+const CAUSE_DEPTH_LIMIT = 5;
+
+/** Maximum character length of serialized error description strings */
+const DESCRIPTION_LENGTH_LIMIT = 8_000;
+
+/**
+ * Stores an intercepted error in memory with a current timestamp.
+ */
+function recordError(error: unknown): void {
   lastCapturedError = { error, at: Date.now() };
 }
 
-// h3's HTTPError serializes to {"status":500,"unhandled":true,"message":"HTTPError"} —
-// no stack, no cause — so a plain console.error(error) reaches the log pipeline with
-// the failure detail stripped. Expand Error-like args into a string that keeps the
-// message, stack, and the full cause chain.
-const CAUSE_DEPTH_LIMIT = 5;
-const DESCRIPTION_LENGTH_LIMIT = 8_000;
-
+/**
+ * Traverses an Error instance and its recursive cause chain, producing a formatted stack string.
+ *
+ * @param error - The encountered error or thrown object
+ * @returns Serialized multi-line error trace
+ */
 export function describeError(error: unknown): string {
-  const parts: string[] = [];
+  const traces: string[] = [];
   let current: unknown = error;
+
   for (let depth = 0; depth < CAUSE_DEPTH_LIMIT && current != null; depth++) {
     if (!(current instanceof Error)) {
-      parts.push(typeof current === "string" ? current : safeStringify(current));
+      traces.push(typeof current === "string" ? current : safeStringify(current));
       break;
     }
-    const label = depth === 0 ? "" : "caused by: ";
-    const status = describeStatus(current);
-    parts.push(`${label}${current.stack ?? `${current.name}: ${current.message}`}${status}`);
+
+    const causePrefix = depth === 0 ? "" : "caused by: ";
+    const statusLabel = describeStatus(current);
+    const traceContent = current.stack ?? `${current.name}: ${current.message}`;
+
+    traces.push(`${causePrefix}${traceContent}${statusLabel}`);
     current = current.cause;
   }
-  return parts.join("\n").slice(0, DESCRIPTION_LENGTH_LIMIT);
+
+  return traces.join("\n").slice(0, DESCRIPTION_LENGTH_LIMIT);
 }
 
+/**
+ * Extracts HTTP status code metadata attached to custom Error instances if available.
+ */
 function describeStatus(error: Error): string {
   const { status, statusCode } = error as { status?: unknown; statusCode?: unknown };
-  const value = status ?? statusCode;
-  return typeof value === "number" ? ` (status ${value})` : "";
+  const numericStatus = status ?? statusCode;
+  return typeof numericStatus === "number" ? ` (status ${numericStatus})` : "";
 }
 
+/**
+ * Safely serializes objects without throwing on circular references.
+ */
 function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value) ?? String(value);
@@ -45,36 +86,51 @@ function safeStringify(value: unknown): string {
   }
 }
 
+/**
+ * Type guard verifying whether an arbitrary unknown value implements the Error interface.
+ */
 function isErrorLike(value: unknown): value is Error {
   return value instanceof Error;
 }
 
-// Wrap console.error so errors logged by any layer — including h3's internal
-// unhandled-error logging, which this file cannot hook directly — are both
-// recorded for consumeLastCapturedError and expanded before serialization.
+// Preserve original console.error implementation for dispatch
 const originalConsoleError = console.error.bind(console);
+
+// Intercept console.error calls across all server modules to record diagnostic errors
 console.error = (...args: unknown[]) => {
-  const expanded = args.map((arg) => {
+  const expandedArgs = args.map((arg) => {
     if (!isErrorLike(arg)) return arg;
-    record(arg);
+    recordError(arg);
     return describeError(arg);
   });
-  originalConsoleError(...expanded);
+  originalConsoleError(...expandedArgs);
 };
 
+// Bind browser and worker-level error event handlers if globalThis supports them
 if (typeof globalThis.addEventListener === "function") {
-  globalThis.addEventListener("error", (event) => record((event as ErrorEvent).error ?? event));
-  globalThis.addEventListener("unhandledrejection", (event) =>
-    record((event as PromiseRejectionEvent).reason),
-  );
+  globalThis.addEventListener("error", (event) => {
+    recordError((event as ErrorEvent).error ?? event);
+  });
+
+  globalThis.addEventListener("unhandledrejection", (event) => {
+    recordError((event as PromiseRejectionEvent).reason);
+  });
 }
 
+/**
+ * Retrieves and clears the most recently captured server error if within the TTL window.
+ *
+ * @returns The captured Error object or undefined if none exists or has expired
+ */
 export function consumeLastCapturedError(): unknown {
   if (!lastCapturedError) return undefined;
-  if (Date.now() - lastCapturedError.at > TTL_MS) {
+
+  const isExpired = Date.now() - lastCapturedError.at > ERROR_TTL_MS;
+  if (isExpired) {
     lastCapturedError = undefined;
     return undefined;
   }
+
   const { error } = lastCapturedError;
   lastCapturedError = undefined;
   return error;
