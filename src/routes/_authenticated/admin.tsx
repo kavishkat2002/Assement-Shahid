@@ -248,8 +248,8 @@ create policy "vehicle images admin delete" on storage.objects for delete to aut
     setUploading(true);
     let successCount = 0;
 
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
+    for (const [i, file] of fileList.entries()) {
+      if (!file) continue;
       setUploadProgress(`Uploading ${i + 1} of ${fileList.length}: ${file.name}`);
       const cleanName = file.name.replace(/[^a-z0-9.]+/gi, "-").toLowerCase();
       const path = `${v.id}/${Date.now()}-${cleanName}`;
