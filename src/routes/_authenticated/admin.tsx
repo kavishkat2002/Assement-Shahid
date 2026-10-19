@@ -9,6 +9,15 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { EmptyState, ErrorState, Field, LoadingState, PageHeader, StatusBadge, selectClass } from "@/components/site/common";
 import { RoleGate } from "@/components/site/RoleGate";
 import { BookingOps } from "@/components/staff/BookingOps";
@@ -108,14 +117,71 @@ const emptyVehicle = { id: "", category_id: "", make: "", model: "", year: 2022,
 function Fleet() {
   const qc = useQueryClient();
   const [edit, setEdit] = useState<typeof emptyVehicle | null>(null);
+  const [vehicleToDelete, setVehicleToDelete] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   const list = useQuery({
     queryKey: ["admin-vehicles"],
     queryFn: async () => {
-      const { data, error } = await supabase.from("vehicles").select("*, category:vehicle_categories(name), images:vehicle_images(id, url, storage_path, sort_order)").order("created_at", { ascending: false });
+      const { data, error } = await supabase
+        .from("vehicles")
+        .select("*, category:vehicle_categories(name), images:vehicle_images(id, url, storage_path, sort_order)")
+        .order("created_at", { ascending: false });
       if (error) throw error;
       return data;
     },
   });
+
+  async function handleDeleteVehicle(vehicle: any) {
+    if (!vehicle?.id) return;
+    setDeleting(true);
+
+    // 1. Clean up vehicle photos from storage if stored in vehicle-images
+    const paths = (vehicle.images ?? [])
+      .map((im: any) => im.storage_path)
+      .filter(Boolean);
+    if (paths.length > 0) {
+      try {
+        await supabase.storage.from("vehicle-images").remove(paths);
+      } catch (e) {
+        console.warn("Storage cleanup error:", e);
+      }
+    }
+
+    // 2. Delete vehicle record
+    const { error } = await supabase.from("vehicles").delete().eq("id", vehicle.id);
+
+    setDeleting(false);
+    setVehicleToDelete(null);
+
+    if (error) {
+      if (error.code === "23503") {
+        // Foreign key violation: vehicle has historical bookings
+        const { error: archErr } = await supabase
+          .from("vehicles")
+          .update({ is_active: false })
+          .eq("id", vehicle.id);
+
+        if (archErr) {
+          toast.error(friendlyError(archErr));
+        } else {
+          toast.info("Vehicle has existing rental bookings. It has been archived (hidden from listings) instead of deleted.");
+          qc.invalidateQueries({ queryKey: ["admin-vehicles"] });
+          qc.invalidateQueries({ queryKey: ["vehicles"] });
+          if (edit?.id === vehicle.id) setEdit(null);
+        }
+      } else {
+        toast.error(friendlyError(error));
+      }
+      return;
+    }
+
+    toast.success(`${vehicle.make} ${vehicle.model} removed from fleet.`);
+    qc.invalidateQueries({ queryKey: ["admin-vehicles"] });
+    qc.invalidateQueries({ queryKey: ["vehicles"] });
+    if (edit?.id === vehicle.id) setEdit(null);
+  }
+
   return (
     <div>
       <Button className="mb-4" onClick={() => setEdit({ ...emptyVehicle })}>Add vehicle</Button>
@@ -132,7 +198,19 @@ function Fleet() {
                   <td className="px-3 py-2">{formatLKR(v.daily_rate_lkr)}</td>
                   <td className="px-3 py-2">{v.is_active ? <StatusBadge status="active" /> : <StatusBadge status="archived" className="bg-secondary text-muted-foreground" />}</td>
                   <td className="px-3 py-2 text-right">
-                    <Button size="sm" variant="outline" onClick={() => setEdit({ ...v, weekly_rate_lkr: v.weekly_rate_lkr ?? "", deposit_lkr: v.deposit_lkr ?? "", features: v.features.join(", ") })}>Edit</Button>
+                    <div className="flex items-center justify-end gap-1.5">
+                      <Button size="sm" variant="outline" onClick={() => setEdit({ ...v, weekly_rate_lkr: v.weekly_rate_lkr ?? "", deposit_lkr: v.deposit_lkr ?? "", features: v.features.join(", ") })}>Edit</Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:bg-destructive/10 hover:text-destructive hover:border-destructive/40"
+                        onClick={() => setVehicleToDelete(v)}
+                        title={`Delete ${v.make} ${v.model}`}
+                        aria-label={`Delete ${v.make} ${v.model}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -142,14 +220,51 @@ function Fleet() {
       )}
       <Dialog open={!!edit} onOpenChange={(o) => !o && setEdit(null)}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-          {edit && <VehicleForm initial={edit} images={(list.data ?? []).find((v: any) => v.id === edit.id)?.images ?? []} onSaved={() => { qc.invalidateQueries({ queryKey: ["admin-vehicles"] }); qc.invalidateQueries({ queryKey: ["vehicles"] }); }} onClose={() => setEdit(null)} />}
+          {edit && (
+            <VehicleForm
+              initial={edit}
+              images={(list.data ?? []).find((v: any) => v.id === edit.id)?.images ?? []}
+              onSaved={() => {
+                qc.invalidateQueries({ queryKey: ["admin-vehicles"] });
+                qc.invalidateQueries({ queryKey: ["vehicles"] });
+              }}
+              onClose={() => setEdit(null)}
+              onDelete={(veh) => setVehicleToDelete(veh)}
+            />
+          )}
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!vehicleToDelete} onOpenChange={(o) => !o && !deleting && setVehicleToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete vehicle from fleet?</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2 text-sm text-muted-foreground">
+              <span>
+                Are you sure you want to delete <strong className="text-foreground">{vehicleToDelete?.make} {vehicleToDelete?.model} {vehicleToDelete?.year}</strong> (Reg: <code className="font-mono text-foreground font-semibold">{vehicleToDelete?.registration_no}</code>)?
+              </span>
+              <span className="block text-xs mt-2 text-muted-foreground">
+                This action will permanently delete the vehicle and its photos. If this vehicle has existing rental bookings, it will be safely archived (hidden from listings) instead of deleted to protect booking records.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <Button
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => handleDeleteVehicle(vehicleToDelete)}
+            >
+              {deleting ? "Deleting…" : "Delete vehicle"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
 
-function VehicleForm({ initial, images, onSaved, onClose }: { initial: typeof emptyVehicle; images: any[]; onSaved: () => void; onClose: () => void }) {
+function VehicleForm({ initial, images, onSaved, onClose, onDelete }: { initial: typeof emptyVehicle; images: any[]; onSaved: () => void; onClose: () => void; onDelete?: (v: any) => void }) {
   const cats = useQuery({ queryKey: ["categories"], queryFn: getCategories });
   const [v, setV] = useState(initial);
   const [err, setErr] = useState("");
@@ -346,7 +461,26 @@ create policy "vehicle images admin delete" on storage.objects for delete to aut
         <div className="sm:col-span-3"><Field label="Features (comma separated)" htmlFor="v-ft"><Input id="v-ft" value={v.features} onChange={set("features")} /></Field></div>
         <div className="sm:col-span-3"><Field label="Description" htmlFor="v-ds"><Textarea id="v-ds" rows={2} value={v.description} onChange={set("description")} /></Field></div>
         {err && <p role="alert" className="text-sm text-destructive sm:col-span-3">{err}</p>}
-        <div className="flex gap-2 sm:col-span-3"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save vehicle"}</Button><Button type="button" variant="outline" onClick={onClose}>Close</Button></div>
+        <div className="flex items-center justify-between sm:col-span-3 pt-2">
+          <div className="flex gap-2">
+            <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save vehicle"}</Button>
+            <Button type="button" variant="outline" onClick={onClose}>Close</Button>
+          </div>
+          {v.id && onDelete && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive hover:border-destructive/60"
+              onClick={() => {
+                onClose();
+                onDelete(v);
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Delete vehicle
+            </Button>
+          )}
+        </div>
       </form>
       {v.id && (
         <div className="mt-6 border-t pt-5">
