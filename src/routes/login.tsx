@@ -2,7 +2,6 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable/index";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/site/common";
@@ -34,7 +33,10 @@ export function AuthCard({ title, children }: { title: string; children: React.R
 
 export async function googleSignIn(redirect: string) {
   sessionStorage.setItem("sd_after_login", redirect);
-  const r = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin + "/login" });
+  const r = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo: window.location.origin + "/login" },
+  });
   return r.error ? friendlyError(r.error) : "";
 }
 
