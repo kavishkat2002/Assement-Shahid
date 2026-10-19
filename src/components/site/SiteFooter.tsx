@@ -33,7 +33,7 @@ export function SiteFooter() {
         </div>
       </div>
       <div className="border-t border-navy-foreground/15">
-        <p className="container-page py-4 text-xs opacity-70">© {new Date().getFullYear()} SwiftDrive Rentals. Vehicles and prices shown are demonstration data.</p>
+        <p className="container-page py-4 text-xs opacity-70">© {new Date().getFullYear()} SwiftDrive Rentals. All rights reserved.</p>
       </div>
     </footer>
   );
