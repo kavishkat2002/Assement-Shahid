@@ -52,7 +52,7 @@ export function friendlyError(err: unknown): string {
   if (/User already registered/i.test(raw)) return "An account with this email already exists. Try signing in instead.";
   if (/Invalid login credentials/i.test(raw)) return "Incorrect email or password.";
   if (/Email not confirmed/i.test(raw)) return "Please confirm your email address first — check your inbox.";
-  if (/rate limit|over_email_send_rate_limit/i.test(raw)) return "Email rate limit exceeded. Please disable 'Confirm email' in Supabase Auth settings or try again in a few minutes.";
+  if (/rate limit|over_email_send_rate_limit/i.test(raw)) return "Too many requests. Please wait a few minutes before trying again.";
   if (/email.*invalid/i.test(raw)) return "Please enter a valid email address (e.g. Gmail).";
   if (/Failed to fetch|NetworkError/i.test(raw)) return "We couldn't reach the server. Please check your connection and try again.";
   if (/JWT|expired/i.test(raw)) return "Your session has expired. Please sign in again.";

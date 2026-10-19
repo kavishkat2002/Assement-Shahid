@@ -1,1 +1,2 @@
-// auto-generated and intentionally left blank, do not edit
+// Database schema definitions managed via SQL migrations in drizzle/migrations
+export {};
