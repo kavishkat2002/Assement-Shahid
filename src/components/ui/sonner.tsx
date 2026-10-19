@@ -1,8 +1,18 @@
+/**
+ * @file sonner.tsx
+ * @description Accessible toast notification container based on the Sonner library.
+ * Integrated into the root application shell (`__root.tsx`) for global toast dispatch.
+ */
+
+import * as React from "react";
 import { Toaster as Sonner } from "sonner";
 
 type ToasterProps = React.ComponentProps<typeof Sonner>;
 
-const Toaster = ({ ...props }: ToasterProps) => {
+/**
+ * Global Toaster component providing styled feedback banners.
+ */
+export const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       className="toaster group"
@@ -19,5 +29,3 @@ const Toaster = ({ ...props }: ToasterProps) => {
     />
   );
 };
-
-export { Toaster };
