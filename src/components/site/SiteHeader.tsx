@@ -1,6 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Menu, X, Car } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 
@@ -36,8 +36,7 @@ export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b bg-card">
       <div className="container-page flex h-16 items-center justify-between gap-4">
-        <Link to="/" className="flex items-center gap-2 font-display text-lg font-bold text-foreground">
-          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-navy text-navy-foreground"><Car className="h-4 w-4" aria-hidden /></span>
+        <Link to="/" className="flex items-center gap-1.5 font-display text-lg font-bold text-foreground">
           SwiftDrive <span className="font-medium text-muted-foreground">Rentals</span>
         </Link>
         <nav aria-label="Main" className="hidden items-center gap-6 lg:flex">
