@@ -359,29 +359,26 @@ on conflict (id) do update set
   allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
 
 -- Storage RLS Policies
-do $$
-begin
-  -- Drop existing policies if any to prevent duplicate errors
-  drop policy if exists "vehicle images read" on storage.objects;
-  drop policy if exists "vehicle images admin write" on storage.objects;
-  drop policy if exists "vehicle images admin delete" on storage.objects;
+drop policy if exists "vehicle images read" on storage.objects;
+drop policy if exists "vehicle images admin write" on storage.objects;
+drop policy if exists "vehicle images admin delete" on storage.objects;
 
-  create policy "vehicle images read"
-    on storage.objects for select
-    using (bucket_id = 'vehicle-images');
+create policy "vehicle images read"
+  on storage.objects for select
+  using (bucket_id = 'vehicle-images');
 
-  create policy "vehicle images admin write"
-    on storage.objects for insert to authenticated
-    with check (
-      bucket_id = 'vehicle-images'
-      and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid()))
-    );
+create policy "vehicle images admin write"
+  on storage.objects for insert to authenticated
+  with check (
+    bucket_id = 'vehicle-images'
+    and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid()))
+  );
 
-  create policy "vehicle images admin delete"
-    on storage.objects for delete to authenticated
-    using (
-      bucket_id = 'vehicle-images'
-      and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid()))
-    );
-end $$;
+create policy "vehicle images admin delete"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'vehicle-images'
+    and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid()))
+  );
+
 

@@ -192,16 +192,13 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
 values ('vehicle-images', 'vehicle-images', false, 5242880, array['image/jpeg', 'image/png', 'image/webp', 'image/jpg'])
 on conflict (id) do update set public = false, file_size_limit = 5242880, allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
 
-do $$
-begin
-  drop policy if exists "vehicle images read" on storage.objects;
-  drop policy if exists "vehicle images admin write" on storage.objects;
-  drop policy if exists "vehicle images admin delete" on storage.objects;
+drop policy if exists "vehicle images read" on storage.objects;
+drop policy if exists "vehicle images admin write" on storage.objects;
+drop policy if exists "vehicle images admin delete" on storage.objects;
 
-  create policy "vehicle images read" on storage.objects for select using (bucket_id = 'vehicle-images');
-  create policy "vehicle images admin write" on storage.objects for insert to authenticated with check (bucket_id = 'vehicle-images' and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid())));
-  create policy "vehicle images admin delete" on storage.objects for delete to authenticated using (bucket_id = 'vehicle-images' and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid())));
-end $$;`;
+create policy "vehicle images read" on storage.objects for select using (bucket_id = 'vehicle-images');
+create policy "vehicle images admin write" on storage.objects for insert to authenticated with check (bucket_id = 'vehicle-images' and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid())));
+create policy "vehicle images admin delete" on storage.objects for delete to authenticated using (bucket_id = 'vehicle-images' and (public.has_role(auth.uid(), 'admin') or public.is_staff(auth.uid())));`;
 
   function copyBucketSql() {
     navigator.clipboard.writeText(bucketSetupSql);
