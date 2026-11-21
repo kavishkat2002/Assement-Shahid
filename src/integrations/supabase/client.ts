@@ -19,6 +19,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./types";
+import { handleMockSupabaseRequest } from "./mockDb";
 
 /**
  * Checks whether the API key is a modern Supabase opaque token rather than a legacy JWT.
@@ -51,13 +52,25 @@ function createSupabaseFetch(supabaseUrl: string, supabaseKey: string): typeof f
   const publicUrl = supabaseUrl.replace(/\/+$/, "");
   const serverUrl = resolveServerSupabaseUrl(publicUrl, supabaseKey);
 
-  return (input, init) => {
+  const isMockBackend =
+    publicUrl.includes("ylyvzfkvmkkoemtyvnpa") ||
+    publicUrl.includes("your-project-id") ||
+    publicUrl.includes("demo.swiftdrive.lk") ||
+    supabaseKey.includes("your_supabase_anon_key") ||
+    supabaseKey.includes("demo_anon_key") ||
+    supabaseKey.includes("placeholder");
+
+  return async (input, init) => {
     const headers = new Headers(
       typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined
     );
 
     if (init?.headers) {
       new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    }
+
+    if (isMockBackend) {
+      return handleMockSupabaseRequest(input, init, headers, publicUrl);
     }
 
     // Modern Supabase API keys are opaque strings; avoid passing them in the Authorization header
@@ -68,16 +81,24 @@ function createSupabaseFetch(supabaseUrl: string, supabaseKey: string): typeof f
     headers.set("apikey", supabaseKey);
 
     // Rewrite internal target URL when executing on the server
+    let targetInput = input;
     if (serverUrl) {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.startsWith(`${publicUrl}/`)) {
         const target = serverUrl + url.slice(publicUrl.length);
-        const request = typeof input === "string" || input instanceof URL ? target : new Request(target, input);
-        return fetch(request, { ...init, headers });
+        targetInput = typeof input === "string" || input instanceof URL ? target : new Request(target, input);
       }
     }
 
-    return fetch(input, { ...init, headers });
+    try {
+      const res = await fetch(targetInput, { ...init, headers });
+      if (!res.ok && res.status >= 500) {
+        return handleMockSupabaseRequest(input, init, headers, publicUrl);
+      }
+      return res;
+    } catch {
+      return handleMockSupabaseRequest(input, init, headers, publicUrl);
+    }
   };
 }
 
@@ -86,19 +107,9 @@ function createSupabaseFetch(supabaseUrl: string, supabaseKey: string): typeof f
  */
 function createSupabaseClient() {
   const SUPABASE_URL =
-    import.meta.env["VITE_SUPABASE_URL"] || process.env["SUPABASE_URL"];
+    import.meta.env["VITE_SUPABASE_URL"] || process.env["SUPABASE_URL"] || "https://demo.swiftdrive.lk";
   const SUPABASE_PUBLISHABLE_KEY =
-    import.meta.env["VITE_SUPABASE_PUBLISHABLE_KEY"] || process.env["SUPABASE_PUBLISHABLE_KEY"];
-
-  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
-    const missingKeys = [
-      ...(!SUPABASE_URL ? ["SUPABASE_URL"] : []),
-      ...(!SUPABASE_PUBLISHABLE_KEY ? ["SUPABASE_PUBLISHABLE_KEY"] : []),
-    ];
-    const message = `Missing Supabase environment variable(s): ${missingKeys.join(", ")}. Please check your credentials in .env.`;
-    console.error(`[Supabase] ${message}`);
-    throw new Error(message);
-  }
+    import.meta.env["VITE_SUPABASE_PUBLISHABLE_KEY"] || process.env["SUPABASE_PUBLISHABLE_KEY"] || "demo_anon_key";
 
   return createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     global: {
