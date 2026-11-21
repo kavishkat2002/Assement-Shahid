@@ -517,6 +517,26 @@ function persistState() {
   }
 }
 
+const mockStorage: Record<string, string> = {};
+
+async function readBodyAsUrl(body: unknown): Promise<string> {
+  if (typeof window !== "undefined") {
+    if (body instanceof Blob || body instanceof File) {
+      try {
+        return await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => resolve(URL.createObjectURL(body));
+          reader.readAsDataURL(body);
+        });
+      } catch {
+        return URL.createObjectURL(body);
+      }
+    }
+  }
+  return "/images/economy.jpg";
+}
+
 // -----------------------------------------------------------------------------
 // Request Dispatcher & Matchers
 // -----------------------------------------------------------------------------
@@ -651,8 +671,36 @@ export async function handleMockSupabaseRequest(
   }
 
   // --- Storage Endpoints ---
+  if (pathname.includes("/storage/v1/object/sign/")) {
+    const path = pathname.replace(/^.*\/storage\/v1\/object\/sign\/[^/]+\//, "");
+    const signedUrl = mockStorage[path] ?? "/images/economy.jpg";
+    return jsonResponse({
+      signedURL: signedUrl,
+      signedUrl: signedUrl,
+    });
+  }
+
+  if (pathname.includes("/storage/v1/object/") && method === "POST") {
+    const path = pathname.replace(/^.*\/storage\/v1\/object\/[^/]+\//, "");
+    if (init?.body) {
+      mockStorage[path] = await readBodyAsUrl(init.body);
+    }
+    return jsonResponse({
+      Key: path,
+      Id: path,
+    });
+  }
+
+  if (pathname.includes("/storage/v1/object/") && method === "DELETE") {
+    return jsonResponse({ message: "Deleted" });
+  }
+
   if (pathname.includes("/storage/v1/")) {
-    return jsonResponse({ Key: "mock/photo.jpg", signedURL: "/images/economy.jpg" });
+    return jsonResponse({
+      Key: "mock/photo.jpg",
+      signedURL: "/images/economy.jpg",
+      signedUrl: "/images/economy.jpg",
+    });
   }
 
   return jsonResponse({ data: [] });
@@ -921,17 +969,14 @@ function handleTable(
       // GET vehicles with join
       let list = state.vehicles.map((v) => {
         const cat = state.categories.find((c) => c.id === v.category_id);
-        const imgs = state.images.filter((img) => img.vehicle_id === v.id);
+        const imgs = state.images
+          .filter((img) => img.vehicle_id === v.id)
+          .sort((a, b) => a.sort_order - b.sort_order);
+
         return {
           ...v,
           category: cat ? { id: cat.id, slug: cat.slug, name: cat.name } : null,
-          images: imgs.length > 0 ? imgs : [
-            {
-              url: `/images/${cat?.slug ?? "economy"}.jpg`,
-              alt: `${v.make} ${v.model}`,
-              sort_order: 0,
-            },
-          ],
+          images: imgs,
         };
       });
 
@@ -1031,6 +1076,59 @@ function handleTable(
           "content-range": contentRange,
         },
       });
+    }
+
+    case "vehicle_images": {
+      if (method === "POST") {
+        const items = Array.isArray(body) ? (body as Record<string, unknown>[]) : [body];
+        const inserted: MockImage[] = [];
+
+        for (const it of items) {
+          const newImg: MockImage = {
+            id: `img-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+            vehicle_id: String(it["vehicle_id"] ?? ""),
+            url: String(it["url"] ?? "/images/economy.jpg"),
+            alt: String(it["alt"] ?? "Vehicle photo"),
+            sort_order: Number(it["sort_order"] ?? state.images.length),
+            storage_path: it["storage_path"] ? String(it["storage_path"]) : null,
+          };
+          state.images.push(newImg);
+          inserted.push(newImg);
+        }
+
+        persistState();
+        return jsonResponse(Array.isArray(body) ? inserted : (inserted[0] ?? null));
+      }
+
+      if (method === "DELETE") {
+        const idEq = params.get("id")?.replace(/^eq\./, "");
+        if (idEq) {
+          state.images = state.images.filter((img) => img.id !== idEq);
+          persistState();
+        }
+        return jsonResponse(null);
+      }
+
+      if (method === "PATCH") {
+        const idEq = params.get("id")?.replace(/^eq\./, "");
+        if (idEq) {
+          const img = state.images.find((x) => x.id === idEq);
+          if (img) {
+            Object.assign(img, body);
+            persistState();
+            return jsonResponse(img);
+          }
+        }
+        return jsonResponse(null);
+      }
+
+      // GET vehicle_images
+      let imgs = [...state.images];
+      const vidEq = params.get("vehicle_id")?.replace(/^eq\./, "");
+      if (vidEq) {
+        imgs = imgs.filter((img) => img.vehicle_id === vidEq);
+      }
+      return jsonResponse(imgs);
     }
 
     case "business_policies": {
