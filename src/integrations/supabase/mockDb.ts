@@ -750,13 +750,23 @@ function handleRpc(name: string, args: Record<string, unknown>): Response {
       }
       const deposit = v.deposit_lkr ?? state.policies.default_deposit_lkr;
 
+      const hasConflict = state.bookings.some(
+        (b) =>
+          b.vehicle_id === vid &&
+          ["pending", "confirmed", "active"].includes(b.status) &&
+          b.pickup_date < r &&
+          b.return_date > p
+      );
+
       return jsonResponse({
+        rental_days: days,
         days,
         daily_rate_lkr: v.daily_rate_lkr,
         weekly_rate_lkr: v.weekly_rate_lkr,
         rental_amount_lkr: rentalAmount,
         deposit_lkr: deposit,
         total_due_lkr: rentalAmount + deposit,
+        available: !hasConflict,
       });
     }
 
@@ -767,6 +777,21 @@ function handleRpc(name: string, args: Record<string, unknown>): Response {
 
       const p = String(args["_pickup"] ?? "");
       const r = String(args["_return"] ?? "");
+
+      const hasConflict = state.bookings.some(
+        (b) =>
+          b.vehicle_id === vid &&
+          ["pending", "confirmed", "active"].includes(b.status) &&
+          b.pickup_date < r &&
+          b.return_date > p
+      );
+      if (hasConflict) {
+        return jsonResponse(
+          { error: "VEHICLE_UNAVAILABLE", message: "This vehicle is already reserved for some of those dates." },
+          400
+        );
+      }
+
       const days = Math.max(1, Math.round((Date.parse(r) - Date.parse(p)) / 86400000));
       let rentalAmount = days * v.daily_rate_lkr;
       if (v.weekly_rate_lkr && days >= 7) {
